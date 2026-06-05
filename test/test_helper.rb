@@ -31,10 +31,12 @@ module JekyllTestHelper
     Jekyll::Site.new(Jekyll.configuration(default_config.merge(config)))
   end
 
-  def create_post(filename, title: "Post", at_uri: nil, content: "Body")
+  def create_post(filename, title: "Post", at_uri: nil, description: nil, tags: nil, content: "Body")
     posts_dir = File.join(@source_dir, "_posts")
     front_matter = ["layout: post", %(title: "#{title}")]
     front_matter << %(at_uri: "#{at_uri}") if at_uri
+    front_matter << %(description: "#{description}") if description
+    front_matter << "tags: [#{tags.join(", ")}]" if tags
     File.write(File.join(posts_dir, filename), <<~POST)
       ---
       #{front_matter.join("\n")}
