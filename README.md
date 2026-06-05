@@ -32,7 +32,7 @@ This gem does **not** create the publication record. That's a one-time step you 
 Pick whichever flow you prefer:
 
 - The [standard.site](https://standard.site) dashboard
-- [`goat`](https://github.com/bluesky-social/indigo/tree/main/cmd/goat) — `goat record create --collection site.standard.publication --record '{"url":"https://example.com","name":"Example"}'`
+- [`goat`](https://github.com/bluesky-social/goat). Write the record body to a JSON file (including `$type: site.standard.publication`), then `goat account login` and `goat record create --no-validate publication.json`. `--no-validate` is required: most PDSs don't know the `site.standard.*` lexicons yet, and without it the PDS rejects the record before persisting it.
 - [`sequoia-cli`](https://sequoia.pub)
 - A direct `com.atproto.repo.createRecord` call
 
@@ -95,7 +95,7 @@ Env vars:
 
 ### GitHub Actions
 
-A workflow that publishes documents whenever new posts land on `master`:
+A workflow that publishes documents whenever new posts land on `master`, with a `workflow_dispatch` trigger for one-off backfill runs:
 
 ```yaml
 name: Publish documents
@@ -104,6 +104,7 @@ on:
   push:
     branches: ["master"]
     paths: ["_posts/**"]
+  workflow_dispatch:
 
 permissions: {}
 
@@ -119,6 +120,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: ruby/setup-ruby@v1
         with:
           bundler-cache: true
@@ -127,17 +130,52 @@ jobs:
           BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
           BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
       - name: Commit patched front matter
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [[ -n "$(git status --porcelain _posts)" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add _posts
             git commit -m "Add at_uri to new posts [skip ci]"
-            git push
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME}"
           fi
 ```
 
-The `[skip ci]` plus the `github.actor` guard stop the bot's own commits from re-triggering the workflow.
+`persist-credentials: false` on checkout plus the explicit token in the push URL is what zizmor expects: the token only lives in this one step rather than in `.git/config` for the whole job. The `[skip ci]` plus the `github.actor` guard stop the bot's own commits from re-triggering the workflow.
+
+## Known issues
+
+### GitHub Pages strips `.well-known/`
+
+If you deploy with `actions/upload-pages-artifact`, it hard-codes `--exclude=".[^/]*"` when building the tarball, which silently drops `.well-known/site.standard.publication` from the deployed site and breaks publication verification. There is no flag to disable the exclusion.
+
+The fix is to build the tar yourself and upload it as the `github-pages` artifact directly. Replace the upload step in your Pages deploy workflow with:
+
+```yaml
+- name: Bundle artifact
+  run: |
+    tar \
+      --dereference --hard-dereference \
+      --directory _site \
+      -cvf "$RUNNER_TEMP/artifact.tar" \
+      --exclude=.git --exclude=.github \
+      .
+
+- name: Upload artifact
+  uses: actions/upload-artifact@v4
+  with:
+    name: github-pages
+    path: ${{ runner.temp }}/artifact.tar
+    retention-days: 1
+    if-no-files-found: error
+```
+
+`actions/deploy-pages` consumes the `github-pages` artifact unchanged, so the rest of your pipeline stays the same.
+
+### `path` must match your post URL
+
+The `path` field on each document record is derived from `post.url`, which Jekyll computes from your `permalink` config and the post filename. If `path` doesn't match the canonical URL the post is actually served at, document verification fails. Don't change your permalink scheme after publishing without re-creating the records.
 
 ## License
 
